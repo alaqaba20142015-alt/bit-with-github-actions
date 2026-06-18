@@ -1,30 +1,77 @@
-# This is a basic workflow to help you get started with Actions
+name: Build Debug APK
 
-name: Build CI
-
-# Controls when the action will run. Triggers the workflow on push or pull request
-# events but only for the master branch
 on:
   push:
-    branches: [master]
-  pull_request:
-    branches: [master]
+    paths:
+      - "*.zip"
+      - ".github/workflows/main.yml"
+  workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
+  build-apk:
     runs-on: ubuntu-latest
-    env:
-      BIT_TOKEN: ${{ secrets.BIT_TOKEN }}
-    # Steps represent a sequence of tasks that will be executed as part of the job
-    steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v2
 
-      # Install dependencies and build app
-      - name: Install Dependencies
-        run: npm install
-      - name: Build app
-        run: npm run build
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+
+      - name: Unzip project
+        run: |
+          ZIP_FILE="$(ls -1 *.zip | sort | head -n 1)"
+          echo "Using ZIP: $ZIP_FILE"
+          rm -rf extracted
+          mkdir extracted
+          unzip -q "$ZIP_FILE" -d extracted
+          PROJECT_DIR="$(find extracted -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project dir: $PROJECT_DIR"
+
+      - name: Enable AndroidX
+        run: |
+          cat >> "$PROJECT_DIR/gradle.properties" <<'EOF'
+          android.useAndroidX=true
+          android.enableJetifier=true
+          org.gradle.jvmargs=-Xmx4096m -Dfile.encoding=UTF-8
+          EOF
+
+      - name: Patch Material experimental opt-in
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          root = Path(os.environ["PROJECT_DIR"])
+          annotation = "@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)\n\n"
+          for p in root.glob("app/src/main/java/**/*.kt"):
+              txt = p.read_text(encoding="utf-8")
+              if "ExperimentalMaterial3Api" not in txt:
+                  p.write_text(annotation + txt, encoding="utf-8")
+          PY
+
+      - name: Build debug APK
+        run: |
+          cd "$PROJECT_DIR"
+          gradle :app:assembleDebug --stacktrace
+
+      - name: Prepare APK file
+        run: |
+          mkdir -p output
+          APK_FILE="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" -name "*.apk" | head -n 1)"
+          cp "$APK_FILE" output/IkhtibaratiSmartPro-V0.3.2-debug.apk
+          ls -lh output
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: IkhtibaratiSmartPro-V0.3.2-debug-apk
+          path: output/IkhtibaratiSmartPro-V0.3.2-debug.apk
